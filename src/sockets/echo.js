@@ -20,6 +20,16 @@ const createMockEcho = () => ({
   connector: null
 });
 
+// Determine environment-specific settings
+const isProduction = process.env.NODE_ENV === 'production';
+const getBackendURL = () => {
+  if (isProduction) {
+    return process.env.REACT_APP_BACKEND_URL || 'https://social-todo-2bfe3f41e8ff.herokuapp.com';
+  } else {
+    return process.env.REACT_APP_BACKEND_URL || 'http://social-todo-list.test';
+  }
+};
+
 // Try to create real echo, fall back to mock on failure
 let echo;
 
@@ -29,9 +39,9 @@ try {
     broadcaster: 'pusher',
     key: process.env.REACT_APP_PUSHER_KEY || '45d2b49aa337f102cfe1',
     cluster: process.env.REACT_APP_PUSHER_CLUSTER || 'eu',
-    forceTLS: false,
-    encrypted: false,
-    authEndpoint: `${process.env.REACT_APP_BACKEND_URL || 'http://social-todo-list.test'}/api/broadcasting/auth`,
+    forceTLS: isProduction, // Enable TLS only in production
+    encrypted: isProduction, // Enable encryption only in production
+    authEndpoint: `${getBackendURL()}/api/broadcasting/auth`,
     auth: {
       headers: getAuthHeaders(),
     },

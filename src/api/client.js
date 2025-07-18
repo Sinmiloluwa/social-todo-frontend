@@ -1,7 +1,24 @@
 import axios from 'axios';
 
+// Determine the base URL based on environment
+const getBaseURL = () => {
+  console.log('🌍 Environment Detection:');
+  console.log('  NODE_ENV:', process.env.NODE_ENV);
+  console.log('  REACT_APP_BACKEND_URL:', process.env.REACT_APP_BACKEND_URL);
+  
+  if (process.env.NODE_ENV === 'production') {
+    const url = process.env.REACT_APP_BACKEND_URL || 'https://social-todo-2bfe3f41e8ff.herokuapp.com/api';
+    console.log('  Using PRODUCTION URL:', url);
+    return url;
+  } else {
+    const url = process.env.REACT_APP_BACKEND_URL || 'http://social-todo-list.test/api';
+    console.log('  Using DEVELOPMENT URL:', url);
+    return url;
+  }
+};
+
 const client = axios.create({
-  baseURL: 'http://social-todo-list.test/api',
+  baseURL: getBaseURL(),
   withCredentials: true,
 });
 
