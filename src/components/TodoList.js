@@ -1,11 +1,11 @@
-import { useEffect, useState, useContext } from 'react';
+import { useEffect, useState, useContext, useCallback } from 'react';
 import client from '../api/client';
 import TodoItem from './TodoItem';
 import InviteUser from './InviteUser';
 import { echo } from '../sockets/echo';
 import { AuthContext } from '../auth/AuthContext';
 
-const TodoList = ({ list, isAdmin = false, isOwner = true }) => {
+const TodoList = ({ list, isAdmin = false, isOwner = false, onUpdate }) => {
   const { user } = useContext(AuthContext);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -15,86 +15,213 @@ const TodoList = ({ list, isAdmin = false, isOwner = true }) => {
   const [newItemForm, setNewItemForm] = useState({ title: '', description: '' });
   const [addingItem, setAddingItem] = useState(false);
 
-  // Debug logging
-  console.log('TodoList props:', { 
-    listId: list?.id, 
-    isAdmin, 
-    isOwner,
-    listTitle: list?.title 
-  });
-
-  useEffect(() => {
-    fetchItems();
-
-    const channel = echo.private(`todolist.${list.id}`);
-    
-    // Listen for new items
-    channel.listen('.item.created', ({ item }) => {
-      console.log('Real-time: Item created', item);
-      setItems(prev => [item, ...prev]);
-    });
-    
-    // Listen for item updates (completion toggle)
-    channel.listen('.item.updated', ({ item }) => {
-      console.log('Real-time: Item updated', item);
-      setItems(prev => prev.map(existing => 
-        existing.id === item.id ? item : existing
-      ));
-    });
-    
-    // Listen for item deletions
-    channel.listen('.item.deleted', ({ itemId }) => {
-      console.log('Real-time: Item deleted', itemId);
-      setItems(prev => prev.filter(item => item.id !== itemId));
-    });
-
-    return () => {
-      channel.stopListening('.item.created');
-      channel.stopListening('.item.updated');
-      channel.stopListening('.item.deleted');
-    };
-  }, [list]);
-
-  const fetchItems = async () => {
+  const fetchItems = useCallback(async () => {
     try {
       const response = await client.get(`/todos/show/${list.id}`);
-      console.log('fetchItems - Full response:', response);
-      console.log('fetchItems - Response data:', response.data);
-      
       const { data } = response;
       
-      // Handle different possible response structures
       let items = [];
       if (data.items) {
-        items = data.items;
+        items = Array.isArray(data.items) ? data.items.filter(item => item && item.id) : [];
       } else if (data.data && Array.isArray(data.data)) {
-        items = data.data;
+        items = data.data.filter(item => item && item.id);
       } else if (Array.isArray(data)) {
-        items = data;
+        items = data.filter(item => item && item.id);
       } else if (data.data && data.data.items) {
-        items = data.data.items;
+        items = Array.isArray(data.data.items) ? data.data.items.filter(item => item && item.id) : [];
       }
-      
-      console.log('fetchItems - Extracted items:', items);
-      console.log('fetchItems - Items count:', items.length);
       
       setItems(items);
     } catch (err) {
-      console.error('Error fetching items:', err);
-      console.error('Error response:', err.response?.data);
       setError('Failed to load todo items');
     } finally {
       setLoading(false);
     }
-  };
+  }, [list.id]);
+
+  useEffect(() => {
+    if (list.items && Array.isArray(list.items)) {
+      // Filter out any invalid items
+      const validItems = list.items.filter(item => item && item.id);
+      setItems(validItems);
+      setLoading(false);
+    } else {
+      fetchItems();
+    }
+
+    // Set up WebSocket channel for real-time updates
+    try {
+      const channelName = `todolist.${list.id}`;
+      console.log('Attempting to subscribe to channel:', channelName);
+      
+      const channel = echo.private(channelName);
+      console.log('Channel object:', channel);
+      
+      // Monitor subscription success/failure
+      if (echo.connector && echo.connector.pusher) {
+        echo.connector.pusher.connection.bind('connected', () => {
+          console.log('✅ Connected to Pusher, channels:', Object.keys(echo.connector.pusher.channels.channels || {}));
+        });
+      }
+      
+      // Add subscription success/error handlers
+      channel.subscribed(() => {
+        console.log('✅ Successfully subscribed to channel:', channelName);
+      });
+      
+      channel.error((error) => {
+        console.error('❌ Channel subscription error:', error);
+      });
+      
+      // Listen for new items being created
+      channel.listen('.item.created', (event) => {
+        console.log('Received item.created event:', event);
+        const { item } = event;
+        if (item && item.id) {
+          setItems(prev => {
+            // Check if item already exists to avoid duplicates
+            const exists = prev.some(existingItem => existingItem && existingItem.id === item.id);
+            if (!exists) {
+              return [item, ...prev];
+            }
+            return prev;
+          });
+        }
+      });
+
+      // Try alternative event names that Laravel might use
+      channel.listen('item.created', (event) => {
+        console.log('Received item.created (without dot) event:', event);
+        const { item } = event;
+        if (item && item.id) {
+          setItems(prev => {
+            const exists = prev.some(existingItem => existingItem && existingItem.id === item.id);
+            if (!exists) {
+              return [item, ...prev];
+            }
+            return prev;
+          });
+        }
+      });
+
+      channel.listen('ItemCreated', (event) => {
+        console.log('Received ItemCreated event:', event);
+        const { item } = event;
+        if (item && item.id) {
+          setItems(prev => {
+            const exists = prev.some(existingItem => existingItem && existingItem.id === item.id);
+            if (!exists) {
+              return [item, ...prev];
+            }
+            return prev;
+          });
+        }
+      });
+      
+      // Listen for item updates (completion status, content changes)
+      channel.listen('.item.updated', (event) => {
+        console.log('Received item.updated event:', event);
+        const { item } = event;
+        if (item && item.id) {
+          setItems(prev => prev.map(existing => 
+            existing && existing.id === item.id ? { ...existing, ...item } : existing
+          ));
+        }
+      });
+
+      channel.listen('item.updated', (event) => {
+        console.log('Received item.updated (without dot) event:', event);
+        const { item } = event;
+        if (item && item.id) {
+          setItems(prev => prev.map(existing => 
+            existing && existing.id === item.id ? { ...existing, ...item } : existing
+          ));
+        }
+      });
+      
+      // Listen for item completion toggle
+      channel.listen('.item.completed', (event) => {
+        console.log('Received item.completed event:', event);
+        const { item } = event;
+        if (item && item.id !== undefined) {
+          setItems(prev => prev.map(existing => 
+            existing && existing.id === item.id ? { ...existing, completed: item.completed } : existing
+          ));
+        }
+      });
+      
+      // Listen for item deletions
+      channel.listen('.item.deleted', (event) => {
+        console.log('Received item.deleted event:', event);
+        const { itemId, item_id } = event;
+        const idToDelete = itemId || item_id;
+        if (idToDelete !== undefined) {
+          setItems(prev => prev.filter(item => item && item.id !== idToDelete));
+        }
+      });
+
+      // Add generic event listener to catch any events
+      channel.listen('*', (event) => {
+        console.log('Received generic event:', event);
+      });
+
+      // Add a catch-all for any event on this channel
+      if (channel && channel.bind) {
+        channel.bind_all((eventName, data) => {
+          console.log('📡 Channel event received:', eventName, data);
+        });
+      }
+
+      // Listen for Pusher internal events
+      if (echo.connector && echo.connector.pusher) {
+        const pusher = echo.connector.pusher;
+        pusher.bind_global((eventName, data) => {
+          if (eventName.includes(channelName)) {
+            console.log('🌐 Global event for our channel:', eventName, data);
+          }
+        });
+      }
+
+      // Test the channel connection
+      setTimeout(() => {
+        console.log('🧪 Testing channel connection for:', channelName);
+        console.log('🧪 Channel state:', channel);
+        console.log('🧪 Echo connector state:', echo.connector?.pusher?.connection?.state);
+        console.log('🧪 Available channels:', Object.keys(echo.connector?.pusher?.channels?.channels || {}));
+      }, 2000);
+
+      // Cleanup listeners when component unmounts
+      return () => {
+        try {
+          console.log('Cleaning up WebSocket listeners for channel:', channelName);
+          channel.stopListening('.item.created');
+          channel.stopListening('item.created');
+          channel.stopListening('ItemCreated');
+          channel.stopListening('.item.updated');
+          channel.stopListening('item.updated');
+          channel.stopListening('.item.completed');
+          channel.stopListening('.item.deleted');
+          channel.stopListening('*');
+        } catch (cleanupError) {
+          console.warn('Error cleaning up WebSocket listeners:', cleanupError);
+        }
+      };
+    } catch (wsError) {
+      console.warn('WebSocket connection failed:', wsError);
+      // Continue without real-time updates
+    }
+  }, [list, fetchItems]);
 
   const handleDeleteList = async () => {
     if (window.confirm('Are you sure you want to delete this todo list?')) {
       try {
         await client.delete(`/todos/destroy/${list.id}`);
-        // Refresh the page or remove from parent component
-        window.location.reload();
+        // Call the parent's update function to refresh the list
+        if (onUpdate) {
+          onUpdate();
+        }
       } catch (err) {
+        console.error('Error deleting list:', err);
         setError('Failed to delete todo list');
       }
     }
@@ -107,9 +234,7 @@ const TodoList = ({ list, isAdmin = false, isOwner = true }) => {
 
     try {
       const response = await client.post(`/todo-items/create/${list.id}`, newItemForm);
-      console.log('Item added:', response.data);
       
-      // Normalize the data structure to match what TodoItem expects
       let newItem = null;
       if (response.data && response.data.data) {
         newItem = response.data.data;
@@ -135,13 +260,17 @@ const TodoList = ({ list, isAdmin = false, isOwner = true }) => {
   };
 
   const handleItemUpdate = (itemId, updatedItem) => {
+    if (itemId === undefined || itemId === null) {
+      return;
+    }
+    
     if (updatedItem === null) {
       // Item was deleted
-      setItems(prev => prev.filter(item => item.id !== itemId));
+      setItems(prev => prev.filter(item => item && item.id !== itemId));
     } else {
       // Item was updated
       setItems(prev => prev.map(item => 
-        item.id === itemId ? updatedItem : item
+        item && item.id === itemId ? updatedItem : item
       ));
     }
   };
@@ -321,8 +450,7 @@ const TodoList = ({ list, isAdmin = false, isOwner = true }) => {
           listId={list.id}
           onClose={() => setShowInviteModal(false)}
           onInviteSent={() => {
-            // You could add refresh logic here if needed
-            console.log('User invited successfully');
+            // User invited successfully
           }}
         />
       )}

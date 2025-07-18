@@ -23,9 +23,15 @@ const Login = () => {
     setError('');
 
     try {
-      console.log('Login: Attempting login with:', form.email);
+      console.log('Making login request...');
       const response = await client.post('/auth/login', form);
-      console.log('Login: Full response:', response.data);
+      console.log('Login response:', response.data);
+      
+      // Your specific response structure: { status, message, data: { id, name, ..., token } }
+      if (!response.data.status) {
+        setError(response.data.message || 'Login failed');
+        return;
+      }
       
       const userData = response.data.data;
       const token = userData.token;
@@ -40,31 +46,21 @@ const Login = () => {
         created_at: userData.created_at
       };
       
+      console.log('Extracted user:', user);
+      console.log('Extracted token:', token);
+      
       if (!token) {
-        console.error('Login: No token in response');
         setError('No authentication token received');
         return;
       }
       
-      console.log('Login: Extracted user:', user);
-      console.log('Login: Extracted token:', token);
-      console.log('Login: User type:', user.type);
-      
-      // Store token in localStorage
       localStorage.setItem('token', token);
-      
-      // Update auth context
       login(user, token);
-      
-      console.log('Login: Navigating to dashboard');
-      
-      // Navigate to dashboard
       navigate('/dashboard');
       
-      console.log('Login: Success - user:', user);
     } catch (err) {
       console.error('Login error:', err);
-      setError(err.response?.data?.message || 'Login failed');
+      setError(err.response?.data?.message || err.message || 'Login failed');
     } finally {
       setLoading(false);
     }

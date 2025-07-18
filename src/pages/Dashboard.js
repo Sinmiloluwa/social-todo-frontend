@@ -1,278 +1,293 @@
-import { useEffect, useState, useContext } from 'react';
+import { useEffect, useState, useContext, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import client from '../api/client';
 import TodoList from '../components/TodoList';
+import WebSocketDebug from '../components/WebSocketDebug';
 import { AuthContext } from '../auth/AuthContext';
 
 const Dashboard = () => {
   const [lists, setLists] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [newTodoForm, setNewTodoForm] = useState({ title: '', description: '' });
-  const { user, isAuthenticated, logout } = useContext(AuthContext);
+  const [hasMore, setHasMore] = useState(true);
+  const [currentPage, setCurrentPage] = useState(1);
+  const { user, isAuthenticated } = useContext(AuthContext);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    console.log('Dashboard mounted');
-    console.log('Dashboard: user:', user);
-    console.log('Dashboard: isAuthenticated:', isAuthenticated);
-    console.log('Dashboard: token in localStorage:', localStorage.getItem('token') ? 'EXISTS' : 'MISSING');
-    
-    // Check if user is authenticated
+  const fetchLists = useCallback(async (page = 1, isLoadMore = false) => {
     const token = localStorage.getItem('token');
+    
     if (!token) {
-      console.log('Dashboard: No token found - redirecting to login');
       navigate('/login');
       return;
     }
     
-    console.log('Dashboard: Token exists, fetching lists...');
-    // Only fetch lists if we have a token
-    fetchLists();
-  }, [navigate]);
-
-  const fetchLists = async () => {
-    console.log('Fetching lists...');
+    if (!user) {
+      return;
+    }
+    
+    if (isLoadMore) {
+      setLoadingMore(true);
+    } else {
+      setLoading(true);
+    }
+    setError('');
+    
     try {
-      const { data } = await client.get('/todos/list');
-      console.log('Lists fetched:', data);
-      console.log('Type of data:', typeof data);
-      console.log('Is array:', Array.isArray(data));
+      const response = await client.get(`/todos/list?page=${page}`);
+      const { data } = response;
+      let newLists = [];
       
-      // Ensure we always set an array and add ownership info based on owner_id
-      let lists = [];
-      if (Array.isArray(data)) {
-        lists = data;
-      } else if (data && Array.isArray(data.data)) {
-        lists = data.data;
-      } else {
-        console.warn('API returned non-array data:', data);
-        lists = [];
+      // Handle the API response structure
+      if (data && data.status && Array.isArray(data.data)) {
+        newLists = data.data;
       }
 
-      // Add ownership information to each list
-      const listsWithOwnership = lists.map(list => {
-        const isOwner = list.owner_id === user?.id;
+      const listsWithOwnership = newLists.map(list => {
+        const isOwner = list.owner?.id === user?.id;
         const isInvited = list.users?.some(invitedUser => invitedUser.id === user?.id);
         
         return {
           ...list,
           isOwner: isOwner,
           isInvited: isInvited,
-          // For display purposes
           ownerName: list.owner?.name || 'Unknown',
           invitedUsersCount: list.users?.length || 0
         };
       });
 
-      console.log('Lists with ownership:', listsWithOwnership);
-      console.log('Current user ID:', user?.id);
-      setLists(listsWithOwnership);
+      if (isLoadMore) {
+        // Append new lists to existing ones
+        setLists(prev => [...prev, ...listsWithOwnership]);
+      } else {
+        // Replace all lists (for initial load or refresh)
+        setLists(listsWithOwnership);
+      }
+
+      // Check if there are more items to load
+      // Since your API doesn't seem to have pagination metadata, 
+      // we'll assume there are more if we got a full page of results
+      const pageSize = 10; // Adjust based on your API's page size
+      setHasMore(newLists.length === pageSize);
+      
+      if (isLoadMore) {
+        setCurrentPage(page);
+      }
 
     } catch (err) {
-      console.error('Error fetching lists:', err);
+      if (!isLoadMore) {
+        setLists([]);
+      }
       
-      // Always ensure lists is an array even on error
-      setLists([]);
-      
-      // Don't handle 401 here - let the global interceptor handle it
       if (err.response?.status !== 401) {
         setError('Failed to fetch todo lists: ' + (err.response?.data?.message || err.message));
       }
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
-  };
+  }, [user, navigate]);
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    
+    if (!token) {
+      navigate('/login');
+      return;
+    }
+    
+    if (!user) {
+      return;
+    }
+    
+    fetchLists(1, false);
+  }, [navigate, user, fetchLists, isAuthenticated]);
+
+  // Infinite scroll effect
+  useEffect(() => {
+    const handleScroll = () => {
+      if (
+        window.innerHeight + document.documentElement.scrollTop >= 
+        document.documentElement.offsetHeight - 1000 && // Load when 1000px from bottom
+        !loading &&
+        !loadingMore &&
+        hasMore
+      ) {
+        fetchLists(currentPage + 1, true);
+      }
+    };
+
+    window.addEventListener('scroll', handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, [loading, loadingMore, hasMore, currentPage, fetchLists]);
 
   const handleCreateTodo = async (e) => {
     e.preventDefault();
+    
+    // Double-check that only admins can create lists
+    if (user?.type !== 'admin') {
+      setError('Only administrators can create todo lists');
+      return;
+    }
+    
+    if (!newTodoForm.title.trim()) {
+      setError('Title is required');
+      return;
+    }
+    
     try {
-      await client.post('/todos/create', newTodoForm);
+      const response = await client.post('/todos/create', newTodoForm);
+      
       setNewTodoForm({ title: '', description: '' });
       setShowCreateForm(false);
-      fetchLists(); // Refresh the list
+      setError('');
+      
+      // Reset to first page and refresh the list
+      setCurrentPage(1);
+      setHasMore(true);
+      await fetchLists(1, false);
+      
     } catch (err) {
-      setError('Failed to create todo list');
+      setError(err.response?.data?.message || err.message || 'Failed to create todo list');
     }
   };
 
   const handleInputChange = (e) => {
-    setNewTodoForm({
-      ...newTodoForm,
+    setNewTodoForm(prev => ({
+      ...prev,
       [e.target.name]: e.target.value
-    });
+    }));
   };
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading your todo lists...</p>
-        </div>
+      <div className="dashboard">
+        <div className="loading">Loading your todo lists...</div>
       </div>
     );
   }
 
-  console.log('Rendering dashboard, user:', user, 'lists:', lists, 'error:', error);
-
   return (
-    <div className="min-h-screen bg-gray-100">
-      <div className="max-w-6xl mx-auto px-4 py-8">
-        {/* Debug info */}
-        <div className="mb-4 p-2 bg-yellow-100 border rounded text-xs">
-          <strong>Debug:</strong> User: {user ? `${user.name} (${user.type})` : 'Loading...'} | 
-          Lists: {lists.length} | Error: {error || 'None'}
-        </div>
-        {/* Header */}
-        <div className="flex justify-between items-center mb-8">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900">
-              {user?.type === 'admin' ? 'Your Todo Lists' : 'Shared Todo Lists'}
-            </h1>
-            <p className="text-gray-600 mt-2">
-              {user?.type === 'admin' 
-                ? 'Create and manage your todo lists' 
-                : 'Todo lists shared with you'
-              }
-            </p>
-          </div>
-          
-          {/* Create button for admins only */}
+    <div className="dashboard">
+      <div className="dashboard-header">
+        <h1>Welcome {user?.name || 'User'}!</h1>
+        <div>
+          {/* Only show create button to admin users */}
           {user?.type === 'admin' && (
-            <button
-              onClick={() => setShowCreateForm(true)}
-              className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition flex items-center gap-2"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
-              Create Todo List
-            </button>
-          )}
-        </div>
-
-        {/* Error message */}
-        {error && (
-          <div className="mb-6 p-4 bg-red-100 border border-red-400 text-red-700 rounded-lg">
-            {error}
             <button 
-              onClick={() => setError('')}
-              className="ml-4 text-red-500 hover:text-red-700"
+              className="create-btn" 
+              onClick={() => setShowCreateForm(!showCreateForm)}
+              style={{ marginRight: '10px' }}
             >
-              ✕
+              {showCreateForm ? 'Cancel' : 'Create New Todo List'}
             </button>
-          </div>
-        )}
-
-        {/* Create Todo Form Modal */}
-        {showCreateForm && (user?.type === 'admin' || !user) && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white p-6 rounded-xl shadow-xl max-w-md w-full mx-4">
-              <h2 className="text-xl font-bold mb-4">Create New Todo List</h2>
-              <form onSubmit={handleCreateTodo} className="space-y-4">
-                <input
-                  type="text"
-                  name="title"
-                  placeholder="Todo list title"
-                  value={newTodoForm.title}
-                  onChange={handleInputChange}
-                  required
-                  className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <textarea
-                  name="description"
-                  placeholder="Description (optional)"
-                  value={newTodoForm.description}
-                  onChange={handleInputChange}
-                  rows={3}
-                  className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <div className="flex gap-3">
-                  <button
-                    type="submit"
-                    className="flex-1 bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition"
-                  >
-                    Create
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowCreateForm(false)}
-                    className="flex-1 bg-gray-300 text-gray-700 py-2 rounded-lg hover:bg-gray-400 transition"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {/* User type indicator */}
-        <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-          <div className="flex items-center gap-2">
-            <div className={`w-3 h-3 rounded-full ${user?.type === 'admin' ? 'bg-blue-600' : 'bg-green-600'}`}></div>
-            <span className="font-medium text-gray-700">
-              {user?.type === 'admin' ? 'Creator Account' : 'Collaborator Account'}
-            </span>
-          </div>
-          <p className="text-sm text-gray-600 mt-1">
-            {user?.type === 'admin' 
-              ? 'You can create, edit, and delete todo lists' 
-              : 'You can view and collaborate on shared todo lists'
-            }
-          </p>
-        </div>
-
-        {/* Todo Lists */}
-        <div className="space-y-4">
-          {!Array.isArray(lists) || lists.length === 0 ? (
-            <div className="text-center py-12 bg-gray-50 rounded-lg border-2 border-dashed border-gray-200">
-              <svg className="w-16 h-16 text-gray-400 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-              </svg>
-              <h3 className="text-lg font-semibold text-gray-600 mb-2">
-                No todo lists yet
-              </h3>
-              <p className="text-gray-500">
-                {user?.type === 'admin' 
-                  ? 'Create your first todo list to get started' 
-                  : 'You will see todo lists here when they are shared with you'
-                }
-              </p>
-            </div>
-          ) : (
-            lists.map(list => {
-              const isListOwner = list.isOwner || user?.type === 'admin';
-              console.log('Rendering TodoList:', { 
-                listId: list.id, 
-                listTitle: list.title,
-                userType: user?.type, 
-                isOwner: list.isOwner,
-                isListOwner: isListOwner,
-                isAdmin: user?.type === 'admin',
-                userObject: user,
-                typeComparison: {
-                  actualType: user?.type,
-                  typeOfType: typeof user?.type,
-                  isAdminString: user?.type === 'admin',
-                  isAdminStrict: user?.type === 'admin',
-                  rawComparison: `"${user?.type}" === "admin"`,
-                }
-              });
-              return (
-                <TodoList 
-                  key={list.id} 
-                  list={list} 
-                  isAdmin={isListOwner} 
-                  isOwner={list.isOwner}
-                />
-              );
-            })
           )}
+          <button 
+            className="create-btn" 
+            onClick={() => {
+              setCurrentPage(1);
+              setHasMore(true);
+              fetchLists(1, false);
+            }}
+            style={{ backgroundColor: '#28a745' }}
+          >
+            🔄 Refresh Lists
+          </button>
         </div>
       </div>
+
+      {error && (
+        <div className="error-message">
+          {error}
+        </div>
+      )}
+
+      {/* Info message for regular users */}
+      {user?.type !== 'admin' && (
+        <div style={{
+          backgroundColor: '#e3f2fd',
+          color: '#1565c0',
+          padding: '15px',
+          borderRadius: '5px',
+          marginBottom: '20px',
+          border: '1px solid #bbdefb'
+        }}>
+          <strong>ℹ️ Info:</strong> Only administrators can create new todo lists. You can join existing lists when invited by an admin.
+        </div>
+      )}
+
+      {/* Only show create form to admin users */}
+      {showCreateForm && user?.type === 'admin' && (
+        <form onSubmit={handleCreateTodo} className="create-form">
+          <input
+            type="text"
+            name="title"
+            placeholder="Todo List Title"
+            value={newTodoForm.title}
+            onChange={handleInputChange}
+            required
+          />
+          <textarea
+            name="description"
+            placeholder="Description (optional)"
+            value={newTodoForm.description}
+            onChange={handleInputChange}
+          />
+          <button type="submit">Create Todo List</button>
+        </form>
+      )}
+
+      <div className="todo-lists">
+        {lists.length === 0 ? (
+          <div className="no-lists">
+            <p>No todo lists found. Create your first one!</p>
+          </div>
+        ) : (
+          <div className="lists-grid">
+            {lists.map(list => (
+              <TodoList 
+                key={list.id} 
+                list={list} 
+                isAdmin={user?.type === 'admin'}
+                isOwner={list.isOwner}
+                onUpdate={() => {
+                  setCurrentPage(1);
+                  setHasMore(true);
+                  fetchLists(1, false);
+                }}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {loadingMore && (
+        <div className="loading-more" style={{ 
+          textAlign: 'center', 
+          padding: '20px',
+          color: '#666'
+        }}>
+          Loading more lists...
+        </div>
+      )}
+
+      {!hasMore && lists.length > 0 && (
+        <div className="no-more" style={{ 
+          textAlign: 'center', 
+          padding: '20px',
+          color: '#666'
+        }}>
+          No more lists to load
+        </div>
+      )}
+
+      {/* WebSocket Debug - Only show for first list if available */}
+      {/* {lists.length > 0 && (
+        <WebSocketDebug listId={lists[0].id} />
+      )} */}
     </div>
   );
 };

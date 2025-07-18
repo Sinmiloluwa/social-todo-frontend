@@ -28,14 +28,11 @@ const InviteUser = ({ listId, onClose, onInviteSent }) => {
     
     try {
       const { data } = await client.get(`/search-user?username=${encodeURIComponent(searchTerm)}`);
-      console.log('Search response:', data);
       
       const users = Array.isArray(data.data) ? data.data : [];
-      console.log('Extracted users:', users);
       
       setSearchResults(users);
     } catch (err) {
-      console.error('Error searching users:', err);
       setError('Failed to search users');
       setSearchResults([]);
     } finally {

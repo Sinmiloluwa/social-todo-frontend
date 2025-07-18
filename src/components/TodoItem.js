@@ -15,14 +15,18 @@ const TodoItem = ({ item, isAdmin = false, onItemUpdate, currentUser }) => {
   
   const handleToggleComplete = async () => {
     try {
-      const response = await client.put(`/todo-items/update/${item.id}`, {
-        completed: !item.completed
-      });
+      const response = await client.post(`/todo-items/${item.id}/complete`);
       
       if (response.data) {
+        // Extract the updated item from response
+        let updatedItem = response.data;
+        if (response.data.data) {
+          updatedItem = response.data.data;
+        }
+        
         // Notify parent component to update the item
         if (onItemUpdate) {
-          onItemUpdate(item.id, { ...item, completed: !item.completed });
+          onItemUpdate(item.id, updatedItem);
         }
       }
     } catch (err) {

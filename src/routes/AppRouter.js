@@ -4,8 +4,6 @@ import Register from '../pages/Register';
 import Dashboard from '../pages/Dashboard';
 
 const AppRouter = () => {
-  console.log('AppRouter rendering...');
-  
   return (
     <BrowserRouter>
       <Routes>
