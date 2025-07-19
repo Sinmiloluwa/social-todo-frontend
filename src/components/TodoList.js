@@ -12,7 +12,7 @@ const TodoList = ({ list, isAdmin = false, isOwner = false, onUpdate }) => {
   const [error, setError] = useState('');
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [showAddItemForm, setShowAddItemForm] = useState(false);
-  const [newItemForm, setNewItemForm] = useState({ title: '', description: '' });
+  const [newItemForm, setNewItemForm] = useState({ description: '' });
   const [addingItem, setAddingItem] = useState(false);
 
   const fetchItems = useCallback(async () => {
@@ -48,25 +48,18 @@ const TodoList = ({ list, isAdmin = false, isOwner = false, onUpdate }) => {
     } else {
       fetchItems();
     }
+  }, [list.items, fetchItems]);
 
+  // Separate useEffect for WebSocket setup
+  useEffect(() => {
     // Set up WebSocket channel for real-time updates
     try {
       const channelName = `todolist.${list.id}`;
-      console.log('Attempting to subscribe to channel:', channelName);
-      
       const channel = echo.private(channelName);
-      console.log('Channel object:', channel);
-      
-      // Monitor subscription success/failure
-      if (echo.connector && echo.connector.pusher) {
-        echo.connector.pusher.connection.bind('connected', () => {
-          console.log('✅ Connected to Pusher, channels:', Object.keys(echo.connector.pusher.channels.channels || {}));
-        });
-      }
       
       // Add subscription success/error handlers
       channel.subscribed(() => {
-        console.log('✅ Successfully subscribed to channel:', channelName);
+        console.log('✅ Subscribed to channel:', channelName);
       });
       
       channel.error((error) => {
@@ -75,25 +68,39 @@ const TodoList = ({ list, isAdmin = false, isOwner = false, onUpdate }) => {
       
       // Listen for new items being created
       channel.listen('.item.created', (event) => {
-        console.log('Received item.created event:', event);
-        const { item } = event;
-        if (item && item.id) {
-          setItems(prev => {
+        const item = event.item || event;
+        
+        // Validate that we have the required fields (using description as primary content)
+        if (item && item.id && item.description) {
+          // Ensure created_at is properly formatted
+          if (item.created_at && typeof item.created_at === 'string') {
+            item.created_at = new Date(item.created_at).toISOString();
+          }
+          
+          setItems(currentItems => {
             // Check if item already exists to avoid duplicates
-            const exists = prev.some(existingItem => existingItem && existingItem.id === item.id);
-            if (!exists) {
-              return [item, ...prev];
+            const itemExists = currentItems.some(existingItem => 
+              existingItem && existingItem.id === item.id
+            );
+            
+            if (!itemExists) {
+              return [item, ...currentItems];
             }
-            return prev;
+            return currentItems;
           });
         }
       });
 
-      // Try alternative event names that Laravel might use
+      // Alternative event name (without dot prefix)
       channel.listen('item.created', (event) => {
-        console.log('Received item.created (without dot) event:', event);
-        const { item } = event;
-        if (item && item.id) {
+        const item = event.item || event;
+        
+        if (item && item.id && item.description) {
+          // Ensure created_at is properly formatted
+          if (item.created_at && typeof item.created_at === 'string') {
+            item.created_at = new Date(item.created_at).toISOString();
+          }
+          
           setItems(prev => {
             const exists = prev.some(existingItem => existingItem && existingItem.id === item.id);
             if (!exists) {
@@ -104,24 +111,9 @@ const TodoList = ({ list, isAdmin = false, isOwner = false, onUpdate }) => {
         }
       });
 
-      channel.listen('ItemCreated', (event) => {
-        console.log('Received ItemCreated event:', event);
-        const { item } = event;
-        if (item && item.id) {
-          setItems(prev => {
-            const exists = prev.some(existingItem => existingItem && existingItem.id === item.id);
-            if (!exists) {
-              return [item, ...prev];
-            }
-            return prev;
-          });
-        }
-      });
-      
-      // Listen for item updates (completion status, content changes)
+      // Listen for item updates
       channel.listen('.item.updated', (event) => {
-        console.log('Received item.updated event:', event);
-        const { item } = event;
+        const item = event.item || event;
         if (item && item.id) {
           setItems(prev => prev.map(existing => 
             existing && existing.id === item.id ? { ...existing, ...item } : existing
@@ -129,20 +121,9 @@ const TodoList = ({ list, isAdmin = false, isOwner = false, onUpdate }) => {
         }
       });
 
-      channel.listen('item.updated', (event) => {
-        console.log('Received item.updated (without dot) event:', event);
-        const { item } = event;
-        if (item && item.id) {
-          setItems(prev => prev.map(existing => 
-            existing && existing.id === item.id ? { ...existing, ...item } : existing
-          ));
-        }
-      });
-      
       // Listen for item completion toggle
       channel.listen('.item.completed', (event) => {
-        console.log('Received item.completed event:', event);
-        const { item } = event;
+        const item = event.item || event;
         if (item && item.id !== undefined) {
           setItems(prev => prev.map(existing => 
             existing && existing.id === item.id ? { ...existing, completed: item.completed } : existing
@@ -150,67 +131,30 @@ const TodoList = ({ list, isAdmin = false, isOwner = false, onUpdate }) => {
         }
       });
       
-      // Listen for item deletions
+            // Listen for item deletions
       channel.listen('.item.deleted', (event) => {
-        console.log('Received item.deleted event:', event);
-        const { itemId, item_id } = event;
-        const idToDelete = itemId || item_id;
-        if (idToDelete !== undefined) {
-          setItems(prev => prev.filter(item => item && item.id !== idToDelete));
+        const itemId = event.itemId || event.item_id || event.id;
+        if (itemId !== undefined) {
+          setItems(prev => prev.filter(item => item && item.id !== itemId));
         }
       });
-
-      // Add generic event listener to catch any events
-      channel.listen('*', (event) => {
-        console.log('Received generic event:', event);
-      });
-
-      // Add a catch-all for any event on this channel
-      if (channel && channel.bind) {
-        channel.bind_all((eventName, data) => {
-          console.log('📡 Channel event received:', eventName, data);
-        });
-      }
-
-      // Listen for Pusher internal events
-      if (echo.connector && echo.connector.pusher) {
-        const pusher = echo.connector.pusher;
-        pusher.bind_global((eventName, data) => {
-          if (eventName.includes(channelName)) {
-            console.log('🌐 Global event for our channel:', eventName, data);
-          }
-        });
-      }
-
-      // Test the channel connection
-      setTimeout(() => {
-        console.log('🧪 Testing channel connection for:', channelName);
-        console.log('🧪 Channel state:', channel);
-        console.log('🧪 Echo connector state:', echo.connector?.pusher?.connection?.state);
-        console.log('🧪 Available channels:', Object.keys(echo.connector?.pusher?.channels?.channels || {}));
-      }, 2000);
 
       // Cleanup listeners when component unmounts
       return () => {
         try {
-          console.log('Cleaning up WebSocket listeners for channel:', channelName);
           channel.stopListening('.item.created');
           channel.stopListening('item.created');
-          channel.stopListening('ItemCreated');
           channel.stopListening('.item.updated');
-          channel.stopListening('item.updated');
           channel.stopListening('.item.completed');
           channel.stopListening('.item.deleted');
-          channel.stopListening('*');
         } catch (cleanupError) {
           console.warn('Error cleaning up WebSocket listeners:', cleanupError);
         }
       };
     } catch (wsError) {
       console.warn('WebSocket connection failed:', wsError);
-      // Continue without real-time updates
     }
-  }, [list, fetchItems]);
+  }, [list.id]);
 
   const handleDeleteList = async () => {
     if (window.confirm('Are you sure you want to delete this todo list?')) {
@@ -248,7 +192,7 @@ const TodoList = ({ list, isAdmin = false, isOwner = false, onUpdate }) => {
       }
       
       // Reset form and close modal
-      setNewItemForm({ title: '', description: '' });
+      setNewItemForm({ description: '' });
       setShowAddItemForm(false);
       
     } catch (err) {
@@ -402,21 +346,13 @@ const TodoList = ({ list, isAdmin = false, isOwner = false, onUpdate }) => {
           <div className="bg-white p-6 rounded-xl shadow-xl max-w-md w-full mx-4">
             <h2 className="text-xl font-bold mb-4">Add New Todo Item</h2>
             <form onSubmit={handleAddItem} className="space-y-4">
-              <input
-                type="text"
-                name="title"
-                placeholder="Todo item title"
-                value={newItemForm.title}
-                onChange={handleItemInputChange}
-                required
-                className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-              />
               <textarea
                 name="description"
-                placeholder="Description (optional)"
+                placeholder="What do you need to do?"
                 value={newItemForm.description}
                 onChange={handleItemInputChange}
                 rows={3}
+                required
                 className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
               />
               <div className="flex gap-3">
@@ -431,7 +367,7 @@ const TodoList = ({ list, isAdmin = false, isOwner = false, onUpdate }) => {
                   type="button"
                   onClick={() => {
                     setShowAddItemForm(false);
-                    setNewItemForm({ title: '', description: '' });
+                    setNewItemForm({ description: '' });
                     setError('');
                   }}
                   className="flex-1 bg-gray-300 text-gray-700 py-2 rounded-lg hover:bg-gray-400 transition"

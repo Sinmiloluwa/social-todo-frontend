@@ -1,13 +1,19 @@
 import client from '../api/client';
 
 const TodoItem = ({ item, isAdmin = false, onItemUpdate, currentUser }) => {
-  const creatorName = item.creator?.name || item.user?.name || item.created_by || 'Unknown';
+  const creatorName = item.creator?.name || 
+                     item.user?.name || 
+                     item.created_by?.name || 
+                     item.created_by?.username || 
+                     (typeof item.created_by === 'string' ? item.created_by : 'Unknown');
   
   // Check if current user is the creator of this item
   const isCreator = currentUser && (
     item.creator?.id === currentUser.id ||
     item.user?.id === currentUser.id ||
-    item.created_by === currentUser.name
+    item.created_by?.id === currentUser.id || // Handle new created_by object structure
+    item.created_by === currentUser.name ||   // Fallback for string-based creator
+    item.created_by === currentUser.username  // Handle username comparison
   );
   
   // User can delete if they're admin or the creator
@@ -60,16 +66,29 @@ const TodoItem = ({ item, isAdmin = false, onItemUpdate, currentUser }) => {
         />
         <div className="flex-1">
           <h4 className={`font-medium ${item.completed ? 'line-through text-gray-500' : 'text-gray-900'}`}>
-            {item.title || item.content || item.description || 'Untitled'}
+            {item.description || item.title || item.content || 'Untitled'}
           </h4>
-          {item.description && (
-            <p className="text-sm text-gray-600 mt-1">{item.description}</p>
-          )}
+          {/* Remove the duplicate description display since it's now the main content */}
           <p className="text-xs text-gray-500 mt-1">
             Added by {creatorName}
-            {item.created_at && (
-              <span> • {new Date(item.created_at).toLocaleDateString()}</span>
-            )}
+            {item.created_at && (() => {
+              try {
+                const date = new Date(item.created_at);
+                // Check if date is valid
+                if (isNaN(date.getTime())) {
+                  console.warn('Invalid date format:', item.created_at);
+                  return null;
+                }
+                return <span> • {date.toLocaleDateString('en-US', { 
+                  year: 'numeric', 
+                  month: 'short', 
+                  day: 'numeric' 
+                })}</span>;
+              } catch (error) {
+                console.error('Error parsing date:', item.created_at, error);
+                return null;
+              }
+            })()}
           </p>
         </div>
       </div>
